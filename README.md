@@ -1,0 +1,1 @@
+# Application-of-generalized-additive-models-GAMs-in-Lyme-disease-epidemiology
