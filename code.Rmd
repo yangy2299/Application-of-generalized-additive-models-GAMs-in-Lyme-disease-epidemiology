@@ -1,0 +1,782 @@
+---
+title: "Tutorial"
+author: "Yang Yang"
+date: "12/3/2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results='hide',message=FALSE,warning=FALSE}
+library(maps)
+library(mapdata)
+library(ggmap)
+library(rapportools)
+library(plyr)
+library(rgeos)
+library(geosphere)
+library(mgcv)
+library(raster)
+library(maptools)
+library(rgdal)
+library(animation)
+library(gridExtra)
+library(grid)
+library(cowplot)
+```
+
+## Step 1: Rebuild data
+
+```{r}
+# read Lyme disease dataset from CDC
+lyms=read.csv("C:/Users/yang/Desktop/lym.csv",header=TRUE,sep=",")
+a=as.character(lyms[,1])!=as.character(lyms[,2])
+lym=lyms[a,]        # remove data with unknown locations 
+b=as.character(lym[,2])!="Alaska" 
+lym=lym[b,]         # remove data from Alaska
+c=as.character(lym[,2])!="Hawaii"
+lym=lym[c,]         # remove data from Hawaii
+# delete "county" in county name and change to lowercase
+lym[,1]=as.character(strsplit(tolower(lym[,1])," county"))
+lym[,2]=tolower(lym[,2])
+
+# obtain boundaries of usa, states and counties
+usa <- map_data("usa")
+state<- map_data("state")
+counties <- map_data("county")
+
+# standardize county names in lym dataset and boundary dataset
+# Name changes include adding space, 
+# e.g. "depage", deleting "'",e.g."o'brien".
+lym[582,1]="du page"
+lym[708,1]="la porte"
+lym[825,1]="obrien"
+lym[1552,1]="ste genevieve"
+lym[1769,1]="dona ana"
+lym[1979,1]="la moure"
+lym[2379,1]="shannon"
+lym[2551,1]="de witt"
+lym[2872,1]="newport news"
+lym[2911,1]="virginia beach"
+lym[2907,1]="suffolk"
+lym[2843,1]="hampton"
+lym[2873,1]="norfolk"
+lym=rbind(lym,lyms[328,])
+lym[3110,1:2]=c("washington","district of columbia")
+lym=lym[-1111,]     # remove data with unknown location 
+
+# standardize county names and find counties 
+# which are in lym dataset but not in boundary dataset
+# Name changes include adding space, deleting "parish"and ".".
+n=0
+d=NULL
+namelist=NULL
+for (i in 1:dim(lym)[1]){
+  if(grepl("st. ",lym[i,1])){
+    lym[i,1]=gsub("st.", "st", lym[i,1])
+  }
+  if(grepl("parish",lym[i,1])){
+    lym[i,1]=trim.space(gsub("parish", " ", lym[i,1]))
+  }
+  if(grepl("'s",lym[i,1])){
+    lym[i,1]=gsub("'s", "s", lym[i,1])
+  }
+  if(lym[i,1]=="dekalb"){
+    lym[i,1]="de kalb"
+  }
+  if(lym[i,1]=="desoto"){
+    lym[i,1]="de soto"
+  }
+  if(lym[i,1]=="lasalle"){
+    lym[i,1]="la salle"
+  }   
+  if(lym[i,1]=="st genevieve"){
+    lym[i,1]="ste genevieve"
+  }
+  
+  if ((lym[i,2] %in% counties[,5]) & (lym[i,1] %in% counties[,6])){
+  n=n+1
+  }else{
+  namelist=rbind(namelist,lym[i,]) # give a name list
+  d=c(d,i)
+  } 
+}
+# This name list consist of 34 counties which are in lym dataset 
+# but not in boundary dataset. After checking, they turn out to 
+# be 34 independent cities from Virginia state.
+lym=lym[-d,]    #remove data from independent cities of Virginia
+head(lym)
+```
+
+After rebuilding Lyme disease dataset, the names of counties are standardized with boundary dataset.By deleting 118 rows which are unable to map, finally 3075 counties are obtained for further analysis. As shown above, the lym dataset gives reported case number from 3075 counties during year 2000 to 2016.
+
+
+## Step 2: Display data
+
+### Average counts on map
+
+To have a brief look of the data, the average counts of the 17 years from 3075 counties are shown in the figures.
+
+```{r}
+avg=apply(lym[,5:21],1,mean) #calculate average counts of 17 years
+lymave1=cbind(lym[,1:2],avg)
+colnames(lymave1) <- c("subregion", "region","avgcount")
+# inner join the lym and boundary dataset by county and state names.
+countyavg=join(counties,lymave1,type="inner",by=c("region","subregion"))
+
+county_base=ggplot(data=counties,mapping=aes(x=long,y=lat, 
+  group=group),color="balck") + 
+  geom_polygon(data=usa,aes(x=long,y=lat,group=group),fill=NA)+
+  coord_fixed(1.3)
+
+ditch_the_axes=theme(
+  axis.text=element_blank(),
+  axis.line=element_blank(),
+  axis.ticks=element_blank(),
+  panel.border=element_blank(),
+  panel.grid=element_blank(),
+  axis.title=element_blank(),
+  plot.title=element_text(color="black",size=15,hjust=0.5),
+  panel.background=element_rect(fill="lightblue")
+  )
+
+usavg1 <- county_base +
+  geom_polygon(data = countyavg, aes(fill = avgcount)) + 
+  geom_polygon(data=usa,aes(x=long,y=lat,group=group),fill=NA,color="white")+
+  labs(title="Lyme Disease Average Cases during 2000-2016 in US",
+       fill="Count")+
+  scale_fill_gradientn(colours=rev(heat.colors(12)))+
+  theme_bw() +
+  ditch_the_axes
+usavg1
+```
+
+The density in most areas are too small to discern differences. In order to show a more distinct difference on map, square root of count, instead of count itself, is plotted.
+
+```{r}
+countyavg2=countyavg
+countyavg2[,7]=sqrt(countyavg[,7])
+
+usavg2 <- county_base +
+  geom_polygon(data = countyavg2, aes(fill = avgcount)) + 
+  geom_polygon(data=usa,aes(x=long,y=lat,group=group),fill=NA,color="white")+
+  labs(title="Lyme Disease Average Cases during 2000-2016 in US",
+       fill="sqrt(count)")+
+  scale_fill_gradientn(colours=rev(heat.colors(12)))+
+  theme_bw() +
+  ditch_the_axes
+usavg2
+```
+
+### Time series in animation
+
+Then an animation of reported cases from year 2000 to 2016 was made in unit of square root of counts.
+
+```{r}
+ani.options(verbose = FALSE, ani.width = 920, ani.height = 480)
+saveHTML({
+  for (i in 1:17){
+    lymy=cbind(lym[,1:2],sqrt(lym[,i+4]))
+    colnames(lymy) <- c("subregion", "region","count")
+    cyea=join(counties,lymy,type ="inner",by = c("region","subregion"))
+    usy <- county_base + 
+    geom_polygon(data=cyea, aes(fill = count)) +
+    geom_polygon(data=usa,aes(x=long,y=lat,group=group),fill=NA,color="white")+
+    labs(title=paste("Lyme Disease Cases of Year ",1999+i," in US"),
+         fill="sqrt(count)")+
+    scale_fill_gradientn(colours=rev(heat.colors(12)),limits=c(0,45))+
+    theme_bw() +
+    ditch_the_axes
+    plot(usy) 
+  }
+}, img.name="lymyear_plot",imgdir="lymyear_dir", htmlfile="lymyear.html",
+autobrowse = FALSE, title = "Lyme disease")
+```
+
+## Step 3: Model fitting, prediction and evaluation
+
+### Countrywide analysis
+
+First build the design matrix using the data from 3075 counties from year 2000 to 2016.
+
+```{r}
+# build a design matrix
+A=matrix(0,17,6)
+dm=NULL
+namecor=NULL
+for (i in 1:3085){
+  if (i!=1621){
+    ind=which(counties[,3]==i)
+    cor=counties[ind,1:2]
+    cent=centroid(cor)
+    row=c(unique(counties[ind,5:6]),cent)
+    namecor=rbind(namecor,row)
+    ct=lym[which((lym[,2]==row[1])&(lym[,1]==row[2])),5:21]
+    A[1:17,1]=as.character(row[1])
+    A[1:17,2]=as.character(row[2])
+    A[1:17,3]=as.numeric(row[3])
+    A[1:17,4]=as.numeric(row[4])
+    A[1:17,5]=2000:2016
+    A[1:17,6]=t(ct)
+    dm=rbind(dm,A)
+  }
+}
+dm=as.data.frame(dm)
+colnames(dm)=c("region","subregion","clong","clat","year","count")
+namcor=as.data.frame(namecor)
+colnames(namcor)=c("region","subregion","clong","clat")
+write.csv(dm,file = "dmlym.csv")
+dmlym=read.csv("C:/Users/yang/Desktop/dmlym.csv",header=TRUE,sep=",")
+head(dmlym)
+```
+
+In this design matrix, which is 52428 by 6, longitude, latitude and year are employed as predictors, and count as response.
+
+The gam function is used to fit the model.
+
+#### by training and test sets
+
+The data was randomly split into training and test sets at ratio 0.19. So there are 42428 observations in training set and 10000 observations in test set.
+
+Data model: response follows negative binomial distribution.
+
+```{r}
+set.seed(223)
+sam=sample(1:52428,10000)
+dmtr=dmlym[-sam,]
+dmt=dmlym[sam,]
+
+mo1=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs ="gp",m=c(5,10)),
+        family=nb(theta=NULL,link="log"), data=dmtr)
+predt=c(predict(mo1, newdata = dmt, type = "response"))
+
+mean(abs(dmt[,7]-predt)) # mean absolute error
+summary(mo1)
+```
+
+#### Evaluate interpolation performance
+
+Since the data were collected during year 2000 to 2016, in order to evaluate the performance of prediction within time range (2000-2016), data from year 2004 were removed from training set and used as test set. 
+
+```{r}
+pred04=dmlym[which(dmlym[,6]==2004),] # test set
+dm04=dmlym[-which(dmlym[,6]==2004),]  # training set
+
+mo2=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs="gp",m=c(5,10)),
+        family=nb(theta=NULL,link="log"),data=dm04) 
+
+p04=c(predict(mo2, newdata = pred04, type = "response")) 
+sq04=sqrt(p04)
+pr04=cbind(pred04,sq04)
+predcounty04=join(counties,pr04,type="right",by = c("region","subregion"))
+
+pic_base=county_base +
+  geom_polygon(data=usa,aes(x=long,y=lat,group=group),fill=NA,color="white")+
+  scale_fill_gradientn(colours = rev(heat.colors(12)),limits=c(0,sqrt(1750)))+
+  theme_bw()+
+  ditch_the_axes
+
+pred2004=pic_base +
+  geom_polygon(data=predcounty04, aes(fill=sq04)) + 
+  labs(title="Lyme Disease Expected Count in 2004 in US",fill="sqrt(count)")
+pred2004
+```
+```{r}
+mean(abs(p04-pred04[,7])) # mean absolute error
+summary(mo2)
+```
+
+#### Evaluate extrapolation performance
+
+To evaluate the robustness of model on forecast performance, data from year 2016 were removed from training set and used as test set, and data from year 2000-2015 as training set. 
+
+```{r}
+pred16=dmlym[which(dmlym[,6]==2016),] # test set
+dm16=dmlym[-which(dmlym[,6]==2016),]  # training set
+
+mo3=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs="gp",m=c(5,10)), 
+        family=nb(theta=NULL,link="log"), data=dm16)
+
+p16=c(predict(mo3, newdata = pred16, type = "response"))
+sq16=sqrt(p16)
+pr16=cbind(pred16,sq16)
+predcounty16=join(counties,pr16,type="right",by=c("region","subregion"))
+
+pred2016=pic_base +
+  geom_polygon(data=predcounty16, aes(fill=sq16)) + 
+  labs(title="Lyme Disease Expected Count in 2016 in US",
+       fill="sqrt(count)")
+pred2016
+```
+
+```{r}
+mean(abs(p16-pred16[,7])) # mean absolute error
+summary(mo3)
+```
+
+Compare the prediction results with real data.
+
+```{r}
+# get plots of reported cases in year 2000, 2004 and 2016
+lymy00=cbind(lym[,1:2],sqrt(lym[,5]))
+colnames(lymy00)=c("subregion", "region","count")
+cyea00=join(counties,lymy00,type ="inner",by=c("region","subregion"))
+
+lymy04=cbind(lym[,1:2],sqrt(lym[,9]))
+colnames(lymy04)=c("subregion", "region","count")
+cyea04=join(counties,lymy04,type ="inner",by=c("region","subregion"))
+    
+lymy16=cbind(lym[,1:2],sqrt(lym[,21]))
+colnames(lymy16)=c("subregion", "region","count")
+cyea16=join(counties,lymy16,type ="inner",by=c("region","subregion"))
+
+usy00=pic_base + 
+  geom_polygon(data=cyea00, aes(fill = count)) +
+  labs(title=paste("Reported Cases in 2000"),fill="sqrt(count)")
+
+usy04=pic_base + 
+  geom_polygon(data=cyea04, aes(fill = count)) +
+  labs(title=paste("Reported Cases in 2004"),fill="sqrt(count)")
+    
+usy16=pic_base + 
+  geom_polygon(data=cyea16, aes(fill = count)) +
+  labs(title=paste("Reported Cases in 2016"),fill="sqrt(count)")  
+
+# modify prediction plots
+pred2004b=pred2004+
+  labs(title="Expected Cases in 2004",fill="sqrt(count)")
+pred2016b=pred2016+
+  labs(title="Expected Cases in 2016",fill="sqrt(count)")
+
+# define a function to lay out 2 plots sharing same legend
+grid_arrange_shared_legend <-
+  function(...,
+           ncol = length(list(...)),
+           nrow = 1,
+           position = c("bottom", "right")) {
+    
+    plots <- list(...)
+    position <- match.arg(position)
+    g <-
+      ggplotGrob(plots[[1]]+theme(legend.position=position))$grobs
+    legend <- g[[which(sapply(g, function(x)
+      x$name) == "guide-box")]]
+    lheight <- sum(legend$height)
+    lwidth <- sum(legend$width)
+    gl <- lapply(plots, function(x)
+      x + theme(legend.position = "none"))
+    gl <- c(gl, ncol = ncol, nrow = nrow)
+    
+    combined <- switch(
+      position,
+      "bottom" = arrangeGrob(
+        do.call(arrangeGrob, gl),
+        legend,
+        ncol = 1,
+        heights = unit.c(unit(1, "npc") - lheight, lheight)
+      ),
+      "right" = arrangeGrob(
+        do.call(arrangeGrob, gl),
+        legend,
+        ncol = 2,
+        widths = unit.c(unit(1, "npc") - lwidth, lwidth)
+      )
+    )
+    grid.newpage()
+    grid.draw(combined)
+    invisible(combined)
+    
+}
+```
+
+```{r}
+grid_arrange_shared_legend(usy04,pred2004b)
+```
+```{r}
+grid_arrange_shared_legend(usy16,pred2016b)
+```
+
+#### Forecast
+
+Make a prediction on year 2017 which we don't have data. The whole dataset was used to train the model.
+
+```{r}
+pred17=pred16
+pred17[,6]=rep(2017,3084)
+
+mo4=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs="gp",m=c(5,10)), 
+        family=nb(theta=NULL,link="log"),data=dmlym)
+
+p17=c(predict(mo4,newdata=pred17, type = "response"))
+sq17=sqrt(p17)
+pr17=cbind(pred17,sq17)
+predcounty17=join(counties,pr17,type="right",by=c("region","subregion"))
+
+pred2017=pic_base +
+  geom_polygon(data=predcounty17, aes(fill=sq17)) + 
+  labs(title="Lyme Disease Expected Count in 2017 in US",
+       fill="sqrt(count)")
+pred2017
+```
+```{r}
+summary(mo4)
+```
+### Local analysis
+
+Regions with relatively higher incidence were selected as the study area which includes 23 states.
+
+```{r}
+outname=c("washington","oregon","idaho","montana","north dakota",
+          "south dakota","nebraska","kansas","oklahoma","texas",
+          "new mexico","colorado","wyoming","utah","arizona",
+          "california","nevada","arkansas","tennessee",
+          "north carolina","south carolina","georgia","alabama",
+          "louisiana","florida","mississippi")
+
+newcounties=NULL
+n0=0
+for (i in 1:3085){
+  if (i!=1621){
+    ind=which(counties[,3]==i)
+    if (!(unique(counties[ind,5]) %in% outname)){
+      n0=n0+1
+      keep=counties[ind,]
+      keep[,3]=n0
+      newcounties=rbind(newcounties,keep)
+    }
+  }  
+}    
+inname=NULL
+total=unique(lym[,2])
+for (i in 1:49){
+  if(!(total[i] %in% outname)){
+    inname=c(inname, total[i])
+  }
+}
+inname
+```
+
+The state names in the study areas are listed above.
+
+```{r}
+# build a design matrix for new region
+B=matrix(0,17,6)
+dmnew=NULL
+index=NULL
+for (i in 1:1259){  # n0=1259 counties in new region
+  ind=which(newcounties[,3]==i)
+  cor=newcounties[ind,1:2]
+  cent=centroid(cor)
+  row=c(unique(newcounties[ind,5:6]),cent)
+  id=which((lym[,2]==row[1])&(lym[,1]==row[2]))
+  ct=lym[which((lym[,2]==row[1])&(lym[,1]==row[2])),5:21]
+  B[1:17,1]=as.character(row[1])
+  B[1:17,2]=as.character(row[2])
+  B[1:17,3]=as.numeric(row[3])
+  B[1:17,4]=as.numeric(row[4])
+  B[1:17,5]=2000:2016
+  B[1:17,6]=t(ct)
+  dmnew=rbind(dmnew,B)
+  index=c(index,id)
+}
+dmnew=as.data.frame(dmnew)
+colnames(dmnew)=c("region","subregion","clong","clat","year","count")
+
+write.csv(dmnew,file = "dmnew.csv")
+dmn=read.csv("C:/Users/yang/Desktop/dmnew.csv",header=TRUE,sep=",")
+```
+
+Make a prediction on year 2017.
+
+```{r}
+predn16=dmn[which(dmn[,6]==2016),] 
+predn17=predn16
+predn17[,6]=rep(2017,1259)
+
+mo5=gam(count~s(clong,clat,bs="gp", m=c(5,10))+s(year,bs="gp",m=c(5,10)), 
+        family = nb(theta = NULL,link = "log"), data = dmn)
+
+pn17=c(predict(mo5, newdata = predn17, type = "response"))
+sqn17=sqrt(pn17)
+prn17=cbind(predn17,sqn17)
+predcountyn17=join(newcounties,prn17,type="right",by=c("region","subregion"))
+
+region_base=ggplot(data=newcounties,mapping=aes(x=long,y=lat, 
+  group=group),color="balck") + 
+  coord_fixed(1.3)
+pic2_base=region_base +
+  scale_fill_gradientn(colours = rev(heat.colors(12)),limits=c(0,sqrt(1750)))+
+  theme_bw()+
+  ditch_the_axes
+
+predn2017=pic2_base +
+  geom_polygon(data=predcountyn17, aes(fill=sqn17)) + 
+  labs(title="Local Lyme Disease Expected Count in 2017",fill="sqrt(count)")
+predn2017
+```
+```{r}
+summary(mo5)
+```
+
+Compare the predicted result with local reported cases in 2016.
+
+```{r}
+# get plot of local reported cases in year 2016
+lymly17=cbind(predn16[,2:3],sqrt(predn16[,7]))
+colnames(lymly17)=c("region", "subregion","count")
+clyea17=join(newcounties,lymly17,type ="inner",by=c("region","subregion"))
+
+loc17=pic2_base +
+  geom_polygon(data=clyea17, aes(fill=count)) + 
+  labs(title="Reported cases in 2016 ",fill="sqrt(count)")
+loc17
+```
+
+## Step 4: Compare with other models
+
+### Compare with data model from poisson distribution
+
+Prediction using training and test sets.
+
+```{r}
+m1=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs="gp",m=c(5,10)),
+        family = poisson(link="log"), data=dmtr)
+predtp=c(predict(m1, newdata = dmt, type = "response"))
+
+mean(abs(dmt[,7]-predtp)) # mean absolute error
+summary(m1)
+```
+
+Evaluate interpolation performance (2004).
+
+```{r}
+m2=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs="gp",m=c(5,10)),
+        family=poisson(link="log"),data=dm04) 
+
+pp04=c(predict(m2, newdata = pred04, type = "response")) 
+sqp04=sqrt(pp04)
+prp04=cbind(pred04,sqp04)
+predcountyp04=join(counties,prp04,type="right",by=c("region","subregion"))
+
+predp2004=pic_base +
+  geom_polygon(data=predcountyp04, aes(fill=sqp04)) + 
+  labs(title="Lyme Disease Expected Count in 2004 (poisson)",
+       fill="sqrt(count)")
+predp2004
+```
+```{r}
+mean(abs(pp04-pred04[,7])) # mean absolute error
+summary(m2)
+```
+
+Evaluate exrapolation performance (2016).
+
+```{r}
+m3=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs="gp",m=c(5,10)), 
+        family=poisson(link="log"), data=dm16)
+
+pp16=c(predict(m3, newdata = pred16, type = "response"))
+sqp16=sqrt(pp16)
+prp16=cbind(pred16,sqp16)
+predcountyp16=join(counties,prp16,type="right",by=c("region","subregion"))
+
+predp2016=pic_base +
+  geom_polygon(data=predcountyp16, aes(fill=sqp16)) + 
+  labs(title="Lyme Disease Expected Count in 2016 (poisson)",
+       fill="sqrt(count)")
+predp2016
+```
+```{r}
+mean(abs(pp16-pred16[,7])) # mean absolute error
+summary(m3)
+```
+
+Forecast for 2017.
+
+```{r}
+m4=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs="gp",m=c(5,10)), 
+        family=poisson(link="log"),data=dmlym)
+
+pp17=c(predict(m4,newdata=pred17, type = "response"))
+sqp17=sqrt(pp17)
+prp17=cbind(pred17,sqp17)
+predcountyp17=join(counties,prp17,type="right",by=c("region","subregion"))
+
+predp2017=pic_base +
+  geom_polygon(data=predcountyp17, aes(fill=sqp17)) + 
+  labs(title="Lyme Disease Expected Count in 2017 (poisson)",
+       fill="sqrt(count)")
+predp2017
+```
+```{r}
+summary(m4)
+```
+
+Local forecast for 2017.
+
+```{r}
+m5=gam(count~s(clong,clat,bs="gp",m=c(5,10))+s(year,bs="gp",m=c(5,10)), 
+        family=poisson(link="log"), data = dmn)
+
+pnp17=c(predict(m5, newdata = predn17, type = "response"))
+sqnp17=sqrt(pnp17)
+prnp17=cbind(predn17,sqnp17)
+predcountynp17=join(newcounties,prnp17,type="right",
+                    by=c("region","subregion"))
+
+prednp2017=pic2_base +
+  geom_polygon(data=predcountynp17, aes(fill=sqnp17)) + 
+  labs(title="Local Expected Count in 2017 (poisson)",
+       fill="sqrt(count)")
+prednp2017
+```
+
+```{r}
+summary(m5)
+```
+
+### compare with data model from zero-inflated poisson distribution
+
+Prediction using training and test sets.
+
+```{r}
+mod1=gam(list(count~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs="gp",m=c(1,10)),~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs ="gp",m=c(1,10))),family = ziplss(), data=dmtr)
+predtz=c(predict(mod1, newdata=dmt, type = "response"))
+
+mean(abs(dmt[,7]-predtz)) # mean absolute error
+summary(mod1)
+```
+
+Evaluate interpolation performance (2004).
+
+```{r}
+mod2=gam(list(count~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs ="gp",m=c(1,10)),~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs ="gp",m=c(1,10))),family = ziplss(),data=dm04) 
+
+pz04=c(predict(mod2, newdata=pred04, type="response")) 
+sqz04=sqrt(pz04)
+prz04=cbind(pred04,sqz04)
+predcountyz04=join(counties,prz04,type="right",
+                   by = c("region","subregion"))
+
+predz2004=pic_base +
+  geom_polygon(data=predcountyz04, aes(fill=sqz04)) + 
+  labs(title="Lyme Disease Expected Count in 2004 (z-poisson)",
+       fill="sqrt(count)")
+predz2004
+```
+
+```{r}
+mean(abs(pz04-pred04[,7]))
+summary(mod2)
+```
+
+Evaluate extrapolation performance (2016).
+
+```{r}
+mod3=gam(list(count~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs="gp",m=c(1,10)),~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs="gp",m=c(1,10))),family = ziplss(),data=dm16) 
+
+pz16=c(predict(mod3, newdata=pred16, type="response")) 
+sqz16=sqrt(pz16)
+prz16=cbind(pred16,sqz16)
+predcountyz16=join(counties,prz16,type="right",
+                   by = c("region","subregion"))
+
+predz2016=pic_base +
+  geom_polygon(data=predcountyz16, aes(fill=sqz16)) + 
+  labs(title="Lyme Disease Expected Count in 2016 (z-poisson)",
+       fill="sqrt(count)")
+predz2016
+```
+
+```{r}
+mean(abs(pz16-pred16[,7]))
+summary(mod3)
+```
+
+Forecast for 2017.
+
+```{r}
+mod4=gam(list(count~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs="gp",m=c(1,10)),~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs ="gp",m=c(1,10))),family = ziplss(),data=dmlym)
+
+pz17=c(predict(mod4,newdata=pred17, type = "response"))
+sqz17=sqrt(pz17)
+prz17=cbind(pred17,sqz17)
+predcountyz17=join(counties,prz17,type="right",
+                   by=c("region","subregion"))
+
+predz2017=pic_base +
+  geom_polygon(data=predcountyz17, aes(fill=sqz17)) + 
+  labs(title="Lyme Disease Expected Count in 2017 (z-poisson)",
+       fill="sqrt(count)")
+predz2017
+```
+```{r}
+summary(mod4)
+```
+
+Local forecast for 2017.
+
+```{r}
+mod5=gam(list(count~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs="gp",m=c(1,10)),~s(clong,clat,bs="gp",m=c(1,10))+s(year,
+         bs="gp",m=c(1,10))),family = ziplss(), data = dmn)
+
+pnz17=c(predict(mod5, newdata = predn17, type = "response"))
+sqnz17=sqrt(pnz17)
+prnz17=cbind(predn17,sqnz17)
+predcountynz17=join(newcounties,prnz17, type = "right",
+                    by = c("region","subregion"))
+
+prednz2017=pic2_base +
+  geom_polygon(data=predcountynz17, aes(fill=sqnz17)) + 
+  labs(title="Local Expected Count in 2017 (z-poisson)",
+       fill="sqrt(count)")
+prednz2017
+```
+
+```{r}
+summary(mod5)
+```
+
+
+### Compare model by AIC
+
+prediction using independent training and test sets by negative binomial(mo1), Poisson(m1) and zero-inflated Poinsson(mod1).
+```{r}
+AIC(mo1,m1,mod1)
+```
+prediction for 2004 by negative binomial(mo1), Poisson(m1) and zero-inflated Poinsson(mod1).
+```{r}
+AIC(mo2,m2,mod2)
+```
+Forecast for 2016 by negative binomial(mo1), Poisson(m1) and zero-inflated Poinsson(mod1).
+```{r}
+AIC(mo3,m3,mod3)
+```
+Forecast for 2017 by negative binomial(mo1), Poisson(m1) and zero-inflated Poinsson(mod1).
+```{r}
+AIC(mo4,m4,mod4)
+```
+
+Local forecast for 2017 by negative binomial(mo1), Poisson(m1) and zero-inflated Poinsson(mod1).
+```{r}
+AIC(mo5,m5,mod5)
+```
+
+## Additional material in manuscript
+
+```{r}
+grid_arrange_shared_legend(usy00,usy16)
+
+```
+
